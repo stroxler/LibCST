@@ -132,6 +132,31 @@ class TestConvertTypeComments(CodemodTest):
         """
         self.assertCodemod39Plus(before, after)
 
+    def test_converting_for_statements(self) -> None:
+        before = """
+        # simple binding
+        for x in foo():  # type: int
+            pass
+
+        # nested binding
+        for (a, (b, c)) in bar(): # type: int, (str, float)
+            pass
+        """
+        after = """
+        # simple binding
+        x: int
+        for x in foo():
+            pass
+
+        # nested binding
+        a: int
+        b: str
+        c: float
+        for (a, (b, c)) in bar():
+            pass
+        """
+        self.assertCodemod39Plus(before, after)
+
     def test_no_change_when_type_comment_unused(self) -> None:
         before = """
             # type-ignores are not type comments
