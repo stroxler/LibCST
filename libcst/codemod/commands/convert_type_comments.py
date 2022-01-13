@@ -401,8 +401,7 @@ class ConvertTypeComments(VisitorBasedCodemodCommand):
         # multiple with bindings (there's more than one sensible way to
         # do it), so we make no attempt to handle this
         targets = [
-            item.asname.name for item in updated_node.items
-            if item.asname is not None
+            item.asname.name for item in updated_node.items if item.asname is not None
         ]
         if len(targets) != 1:
             return updated_node
