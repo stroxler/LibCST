@@ -209,6 +209,18 @@ class TestConvertTypeComments(CodemodTest):
             # Multiple assigns with mismatched LHS arities always result in arity
             # errors, and we only codemod if each target is error-free
             v = v0, v1 = (3, 5)  # type: int, int
+
+            # Ignore for statements with arity mismatches
+            for x in []: # type: int, int
+                pass
+
+            # Ignore with statements with arity mismatches
+            with open('file') as (f0, f1): # type: File
+                pass
+
+            # Ignore with statements that have multiple item bindings
+            with open('file') as f0, open('file') as f1: # type: File
+                pass
         """
         after = before
         self.assertCodemod39Plus(before, after)
