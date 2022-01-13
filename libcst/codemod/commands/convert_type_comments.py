@@ -30,7 +30,7 @@ def _ast_for_node(node: cst.CSTNode) -> ast.Module:
 
 
 def _statement_type_comment(
-    node: Union[cst.SimpleStatementLine, cst.For],
+    node: Union[cst.SimpleStatementLine, cst.For, cst.With],
 ) -> Optional[str]:
     return _ast_for_node(node).body[-1].type_comment
 
@@ -361,6 +361,57 @@ class ConvertTypeComments(VisitorBasedCodemodCommand):
         try:
             type_declarations = AnnotationSpreader.type_declaration_statements(
                 bindings=AnnotationSpreader.unpack_target(updated_node.target),
+                annotations=AnnotationSpreader.unpack_type_comment(type_comment),
+                leading_lines=updated_node.leading_lines,
+            )
+        except _ArityError:
+            return updated_node
+        # There is no arity error, so we can add the type delaration(s)
+        return cst.FlattenSentinel(
+            [
+                *type_declarations,
+                updated_node.with_changes(
+                    body=body.with_changes(
+                        header=self._strip_TrailingWhitespace(body.header)
+                    ),
+                    leading_lines=[],
+                ),
+            ]
+        )
+
+    def leave_With(
+        self,
+        original_node: cst.With,
+        updated_node: cst.With,
+    ) -> Union[cst.With, cst.FlattenSentinel]:
+        """
+        Convert a With with a type hint on the bound variable(s) to
+        use type declarations.
+        """
+        # Type comments are only possible when the body is an indented
+        # block, and we need this refinement to work with the header,
+        # so we check and only then extract the type comment.
+        body = updated_node.body
+        if not isinstance(body, cst.IndentedBlock):
+            return updated_node
+        type_comment = _statement_type_comment(original_node)
+        if type_comment is None:
+            return updated_node
+        # PEP 484 does not attempt to specify type comment semantics for
+        # multiple with bindings (there's more than one sensible way to
+        # do it), so we make no attempt to handle this
+        targets = [
+            item.asname.name for item in updated_node.items
+            if item.asname is not None
+        ]
+        if len(targets) != 1:
+            return updated_node
+        target = targets[0]
+        # Zip up the type hint and the bindings. If we hit an arity
+        # error, abort.
+        try:
+            type_declarations = AnnotationSpreader.type_declaration_statements(
+                bindings=AnnotationSpreader.unpack_target(target),
                 annotations=AnnotationSpreader.unpack_type_comment(type_comment),
                 leading_lines=updated_node.leading_lines,
             )

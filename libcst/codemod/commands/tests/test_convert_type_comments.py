@@ -157,6 +157,40 @@ class TestConvertTypeComments(CodemodTest):
         """
         self.assertCodemod39Plus(before, after)
 
+    def test_converting_with_statements(self) -> None:
+        before = """
+        # simple binding
+        with open('file') as f:  # type: File
+            pass
+
+        # simple binding, with extra items
+        with foo(), open('file') as f, bar():  # type: File
+            pass
+
+        # nested binding
+        with bar() as (a, (b, c)): # type: int, (str, float)
+            pass
+        """
+        after = """
+        # simple binding
+        f: "File"
+        with open('file') as f:
+            pass
+
+        # simple binding, with extra items
+        f: "File"
+        with foo(), open('file') as f, bar():
+            pass
+
+        # nested binding
+        a: int
+        b: str
+        c: float
+        with bar() as (a, (b, c)):
+            pass
+        """
+        self.assertCodemod39Plus(before, after)
+
     def test_no_change_when_type_comment_unused(self) -> None:
         before = """
             # type-ignores are not type comments
