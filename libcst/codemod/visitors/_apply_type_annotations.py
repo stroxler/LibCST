@@ -41,9 +41,18 @@ def _get_import_alias_names(
     return import_names
 
 
-def _get_import_names(
+def _get_imported_names(
     imports: Sequence[Union[cst.Import, cst.ImportFrom]],
 ) -> Set[str]:
+    """
+    Given a series of import statements (both Import and ImportFrom),
+    determine all of the names that have been imported into the current
+    scope. For example:
+    - `import foo.bar as bar, foo.baz` produces `{'bar', 'foo.baz'}`
+    - `from foo import (Bar, Baz as B)` produces `{'Bar', 'B'}`
+    - `from foo import *` produces `set()` because we cannot resolve names
+
+    """
     import_names = set()
     for _import in imports:
         if isinstance(_import, cst.Import):
@@ -55,12 +64,19 @@ def _get_import_names(
     return import_names
 
 
-def _is_set(x: Union[None, cst.CSTNode, cst.MaybeSentinel]) -> bool:
+def _is_non_sentinel(x: Union[None, cst.CSTNode, cst.MaybeSentinel]) -> bool:
     return x is not None and x != cst.MaybeSentinel.DEFAULT
 
 
 @dataclass(frozen=True)
 class FunctionKey:
+    """
+    Class representing a callable name and signature.
+
+    The purpose is to ensure that we only apply types from stubs
+    where the stub signature is compatible with the code signature.
+    """
+
     name: str
     pos: int
     kwonly: str
@@ -77,26 +93,70 @@ class FunctionKey:
         pos = len(params.params)
         kwonly = ",".join(sorted(x.name.value for x in params.kwonly_params))
         posonly = len(params.posonly_params)
-        star_arg = _is_set(params.star_arg)
-        star_kwarg = _is_set(params.star_kwarg)
+        star_arg = _is_non_sentinel(params.star_arg)
+        star_kwarg = _is_non_sentinel(params.star_kwarg)
         return cls(name, pos, kwonly, posonly, star_arg, star_kwarg)
 
 
 @dataclass(frozen=True)
 class FunctionAnnotation:
+    """
+    Represents a function signature, including annotations, using
+    libcst nodes. Used to store type annotation information that
+    we can extract from a stub and apply to code.
+    """
+
     parameters: cst.Parameters
     returns: Optional[cst.Annotation]
 
 
 class TypeCollector(cst.CSTVisitor):
     """
-    Collect type annotations from a stub module.
+    Collect type annotation information from a stub file.
+
+    TODO: We currently do this in a way where we convert all
+    type names to fully-qualified form, assume that the desired
+    form of any new import is `from foo import Bar`, and
+    store the data needed to do so. This will not work well in
+    codebases where the style guide bans ImportFrom, and we should
+    make this work.
+
     """
 
     METADATA_DEPENDENCIES = (
         PositionProvider,
         QualifiedNameProvider,
     )
+
+    # Set of all the names (either module names or object names)
+    # that are already imported in the existing code.
+    existing_imports: Set[str]
+
+    # Map where keys represent unique a name + signature
+    # and values contain all the information needed to apply
+    # annotations to the header.
+    #
+    # The name is relative to the module top-level. Both
+    # ordinary functions and methods will apppear, the differnece
+    # is that methods will have a "." in the qualifier used
+    # to create the key (e.g. "Cat.meow").
+    function_annotations: Dict[FunctionKey, FunctionAnnotation]
+
+    # Map from names to annotations of attribues.
+    #
+    # The name is relative to the module top-level. Both
+    # globals and class attributes will appear, the difference
+    # is that the qualifier will have a "." for class attributes
+    # (e.g. "Cat.eye_color").
+    attribute_annotations: Dict[str, cst.Annotation]
+
+    # All of the class definitions from the stub file.
+    #
+    # These are *not* used to apply type annotations to methods
+    # and attributes. They are only used to handle class definitions
+    # that may only exist in a stub, such as typed dictionaries or
+    # protocols.
+    class_definitions: Dict[str, cst.ClassDef]
 
     def __init__(
         self,
@@ -487,7 +547,7 @@ class ApplyTypeAnnotationsVisitor(ContextAwareTransformer):
         """
         import_gatherer = GatherImportsVisitor(CodemodContext())
         tree.visit(import_gatherer)
-        existing_import_names = _get_import_names(import_gatherer.all_imports)
+        existing_import_names = _get_imported_names(import_gatherer.all_imports)
 
         context_contents = self.context.scratch.get(
             ApplyTypeAnnotationsVisitor.CONTEXT_KEY
@@ -726,7 +786,11 @@ class ApplyTypeAnnotationsVisitor(ContextAwareTransformer):
             p: Optional[cst.Annotation],
             q: Optional[cst.Annotation],
         ) -> bool:
-            if self.overwrite_existing_annotations or not _is_set(p) or not _is_set(q):
+            if (
+                self.overwrite_existing_annotations
+                or not _is_non_sentinel(p)
+                or not _is_non_sentinel(q)
+            ):
                 return True
             if not self.strict_annotation_matching:
                 # We will not overwrite clashing annotations, but the signature as a
@@ -764,7 +828,7 @@ class ApplyTypeAnnotationsVisitor(ContextAwareTransformer):
             p: StarParamType,
             q: StarParamType,
         ) -> bool:
-            return _is_set(p) == _is_set(q)
+            return _is_non_sentinel(p) == _is_non_sentinel(q)
 
         def match_params(
             f: cst.FunctionDef,
