@@ -5,9 +5,10 @@
 
 import ast
 import builtins
+import dataclasses
 import functools
 import sys
-from typing import List, Optional, Set, Tuple, Union
+from typing import Generic, Iterator, List, Optional, Set, Tuple, TypeVar, Union
 
 from typing_extensions import TypeAlias
 
@@ -66,8 +67,31 @@ class _ArityError(Exception):
     pass
 
 
-UnpackedTargets: TypeAlias = Union[cst.BaseExpression, List["UnpackedTargets"]]
-UnpackedAnnotations: TypeAlias = Union[str, List["UnpackedAnnotations"]]
+T = TypeVar("T")
+
+
+class ListTree(Generic[T]):
+    pass
+
+
+@dataclasses.dataclass(frozen=True)
+class ListTreeNode(Generic[T], ListTree[T]):
+    elements: List[ListTree[T]]
+
+    def __len__(self) -> int:
+        return len(self.elements)
+
+    def __iter__(self) -> Iterator[ListTree[T]]:
+        return iter(self.elements)
+
+
+@dataclasses.dataclass(frozen=True)
+class ListTreeLeaf(Generic[T], ListTree[T]):
+    value: T
+
+
+UnpackedTargets: TypeAlias = ListTree[cst.BaseExpression]
+UnpackedAnnotations: TypeAlias = ListTree[str]
 TargetAnnotationPair: TypeAlias = Tuple[cst.BaseExpression, str]
 
 
@@ -82,11 +106,11 @@ class AnnotationSpreader:
         expression: ast.expr,
     ) -> UnpackedAnnotations:
         if isinstance(expression, ast.Tuple):
-            return [
-                AnnotationSpreader._unparse_annotation(elt) for elt in expression.elts
-            ]
+            return ListTreeNode(
+                [AnnotationSpreader._unparse_annotation(elt) for elt in expression.elts]
+            )
         else:
-            return ast.unparse(expression)
+            return ListTreeLeaf(ast.unparse(expression))
 
     @staticmethod
     def unpack_type_comment(
@@ -113,20 +137,22 @@ class AnnotationSpreader:
         analysis that is the safest option for codemods.
         """
         if isinstance(target, cst.Tuple):
-            return [
-                AnnotationSpreader.unpack_target(element.value)
-                for element in target.elements
-            ]
+            return ListTreeNode(
+                [
+                    AnnotationSpreader.unpack_target(element.value)
+                    for element in target.elements
+                ]
+            )
         else:
-            return target
+            return ListTreeLeaf(target)
 
     @staticmethod
     def zip_and_flatten(
         target: UnpackedTargets,
         type_info: UnpackedAnnotations,
     ) -> List[Tuple[cst.BaseAssignTargetExpression, str]]:
-        if isinstance(type_info, list):
-            if isinstance(target, list) and len(target) == len(type_info):
+        if isinstance(type_info, ListTreeNode):
+            if isinstance(target, ListTreeNode) and len(target) == len(type_info):
                 # The arities match, so we return the flattened result of
                 # mapping zip_and_flatten over each pair.
                 out: List[Tuple[cst.BaseAssignTargetExpression, str]] = []
@@ -136,12 +162,15 @@ class AnnotationSpreader:
             else:
                 # Either mismatched lengths, or multi-type and one-target
                 raise _ArityError()
-        elif isinstance(target, list):
+        elif isinstance(target, ListTreeNode):
             # multi-target and one-type
             raise _ArityError()
         else:
-            assert isinstance(target, cst.BaseAssignTargetExpression)
-            return [(target, type_info)]
+            assert isinstance(target, ListTreeLeaf)
+            assert isinstance(type_info, ListTreeLeaf)
+            target_value = target.value
+            assert isinstance(target_value, cst.BaseAssignTargetExpression)
+            return [(target_value, type_info.value)]
 
 
 def convert_Assign(
