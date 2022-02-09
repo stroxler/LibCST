@@ -644,8 +644,13 @@ def parallel_exec_transform_with_prettyprint(  # noqa: C901
             for filename in files
         ]
         try:
+            '''
             for result in p.imap_unordered(
                 _execute_transform_wrap, args, chunksize=chunksize
+            ):
+            '''
+            for result in map(
+                _execute_transform_wrap, args,
             ):
                 # Print an execution result, keep track of failures
                 _print_parallel_result(
